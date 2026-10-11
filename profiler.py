@@ -1,9 +1,8 @@
 import sys
-sys.path.append('core')
 import argparse
 import torch
 from config.parser import parse_args
-from raft import RAFT
+from core.raft import RAFT
 
 def main():
     parser = argparse.ArgumentParser()

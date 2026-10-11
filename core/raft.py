@@ -4,11 +4,11 @@ import math
 import torch.nn as nn
 import torch.nn.functional as F
 
-from update import BasicUpdateBlock
-from corr import CorrBlock
-from utils.utils import coords_grid, InputPadder
-from extractor import ResNetFPN
-from layer import conv1x1, conv3x3
+from .update import BasicUpdateBlock
+from .corr import CorrBlock
+from .utils.utils import coords_grid, InputPadder
+from .extractor import ResNetFPN
+from .layer import conv1x1, conv3x3
 
 from huggingface_hub import PyTorchModelHubMixin
 
@@ -20,7 +20,7 @@ class RAFT(
     pipeline_tag="optical-flow-estimation",
     license="bsd-3-clause",
 ):
-    def __init__(self, args):
+    def __init__(self, args, init_weights=True):
         super().__init__()
         self.args = args
         self.output_dim = args.dim * 2
@@ -28,7 +28,7 @@ class RAFT(
         self.args.corr_levels = 4
         self.args.corr_radius = args.radius
         self.args.corr_channel = args.corr_levels * (args.radius * 2 + 1) ** 2
-        self.cnet = ResNetFPN(args, input_dim=6, output_dim=2 * self.args.dim, norm_layer=nn.BatchNorm2d, init_weight=True)
+        self.cnet = ResNetFPN(args, input_dim=6, output_dim=2 * self.args.dim, norm_layer=nn.BatchNorm2d, init_weight=init_weights)
 
         # conv for iter 0 results
         self.init_conv = conv3x3(2 * args.dim, 2 * args.dim)
@@ -45,7 +45,7 @@ class RAFT(
             nn.Conv2d(2 * args.dim, 6, 3, padding=1)
         )
         if args.iters > 0:
-            self.fnet = ResNetFPN(args, input_dim=3, output_dim=self.output_dim, norm_layer=nn.BatchNorm2d, init_weight=True)
+            self.fnet = ResNetFPN(args, input_dim=3, output_dim=self.output_dim, norm_layer=nn.BatchNorm2d, init_weight=init_weights)
             self.update_block = BasicUpdateBlock(args, hdim=args.dim, cdim=args.dim)
     
     def initialize_flow(self, img):
@@ -73,7 +73,8 @@ class RAFT(
         
         return up_flow.reshape(N, 2, 8*H, 8*W), up_info.reshape(N, C, 8*H, 8*W)
 
-    def forward(self, image1, image2, iters=None, flow_gt=None, test_mode=False):
+    def forward(self, image1, image2, iters=None, flow_gt=None, test_mode=False,
+                return_features=False, encoder_amp=False):
         """ Estimate optical flow between pair of frames """
         N, _, H, W = image1.shape
         if iters is None:
@@ -94,9 +95,12 @@ class RAFT(
         N, _, H, W = image1.shape
         dilation = torch.ones(N, 1, H//8, W//8, device=image1.device)
         # run the context network
-        cnet = self.cnet(torch.cat([image1, image2], dim=1))
-        cnet = self.init_conv(cnet)
+        with torch.autocast(image1.device.type, dtype=torch.bfloat16, enabled=encoder_amp):
+            cnet = self.cnet(torch.cat([image1, image2], dim=1))
+        cnet = self.init_conv(cnet.float())
         net, context = torch.split(cnet, [self.args.dim, self.args.dim], dim=1)
+        initial = net.clone() if return_features else None
+        contexts = []
 
         # init flow
         flow_update = self.flow_head(net)
@@ -109,16 +113,21 @@ class RAFT(
             
         if self.args.iters > 0:
             # run the feature network
-            fmap1_8x = self.fnet(image1)
-            fmap2_8x = self.fnet(image2)
-            corr_fn = CorrBlock(fmap1_8x, fmap2_8x, self.args)
+            with torch.autocast(image1.device.type, dtype=torch.bfloat16, enabled=encoder_amp):
+                fmap1_8x = self.fnet(image1)
+                fmap2_8x = self.fnet(image2)
+            corr_fn = CorrBlock(fmap1_8x.float(), fmap2_8x.float(), self.args)
 
         for itr in range(iters):
             N, _, H, W = flow_8x.shape
             flow_8x = flow_8x.detach()
             coords2 = (coords_grid(N, H, W, device=image1.device) + flow_8x).detach()
             corr = corr_fn(coords2, dilation=dilation)
-            net = self.update_block(net, context, corr, flow_8x)
+            if return_features:
+                net, motion = self.update_block(net, context, corr, flow_8x, return_motion=True)
+                contexts.append(torch.cat([context, motion, net], dim=1))
+            else:
+                net = self.update_block(net, context, corr, flow_8x)
             flow_update = self.flow_head(net)
             weight_update = .25 * self.upsample_weight(net)
             flow_8x = flow_8x + flow_update[:, :2]
@@ -158,4 +167,7 @@ class RAFT(
 
             return {'final': flow_predictions[-1], 'flow': flow_predictions, 'info': info_predictions, 'nf': nf_predictions}
         else:
-            return {'final': flow_predictions[-1], 'flow': flow_predictions, 'info': info_predictions, 'nf': None}
+            result = {'final': flow_predictions[-1], 'flow': flow_predictions, 'info': info_predictions, 'nf': None}
+            if return_features:
+                result.update(initial=initial, contexts=contexts)
+            return result

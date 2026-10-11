@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from layer import ConvNextBlock
+from .layer import ConvNextBlock
 
 class FlowHead(nn.Module):
     def __init__(self, input_dim=128, hidden_dim=256, output_dim=4):
@@ -44,9 +44,9 @@ class BasicUpdateBlock(nn.Module):
             self.refine.append(ConvNextBlock(2*cdim+hdim, hdim))
         self.refine = nn.ModuleList(self.refine)
 
-    def forward(self, net, inp, corr, flow, upsample=True):
+    def forward(self, net, inp, corr, flow, upsample=True, return_motion=False):
         motion_features = self.encoder(flow, corr)
         inp = torch.cat([inp, motion_features], dim=1)
         for blk in self.refine:
             net = blk(torch.cat([net, inp], dim=1))
-        return net
+        return (net, motion_features) if return_motion else net

@@ -1,5 +1,4 @@
 import sys
-sys.path.append('core')
 import argparse
 import os
 import numpy as np
@@ -9,13 +8,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data as data
 
-import datasets
-from raft import RAFT
+from core import datasets
+from core.raft import RAFT
 from tqdm import tqdm
 
-from utils import flow_viz
-from utils import frame_utils
-from utils.utils import resize_data, load_ckpt
+from core.utils import flow_viz
+from core.utils import frame_utils
+from core.utils.utils import resize_data, load_ckpt
 
 import ptlflow
 from ptlflow.utils import flow_utils

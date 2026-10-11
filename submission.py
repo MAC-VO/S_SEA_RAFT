@@ -1,5 +1,4 @@
 import sys
-sys.path.append('core')
 
 import argparse
 import os
@@ -14,13 +13,13 @@ import torch.utils.data as data
 
 from config.parser import parse_args
 
-import datasets
-from raft import RAFT
+from core import datasets
+from core.raft import RAFT
 from tqdm import tqdm
 
-from utils.flow_viz import flow_to_image
-from utils import frame_utils
-from utils.utils import load_ckpt, InputPadder
+from core.utils.flow_viz import flow_to_image
+from core.utils import frame_utils
+from core.utils.utils import load_ckpt, InputPadder
 
 def forward_flow(args, model, image1, image2):
     output = model(image1, image2, iters=args.iters, test_mode=True)
